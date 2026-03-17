@@ -305,6 +305,12 @@ def main():
         resetter.reset_all()
         time.sleep(1.0)
         print("  Scene reset. Starting episode...")
+        # init video recorder
+        os.makedirs(os.path.expanduser("~/Downloads/eval_videos"), exist_ok=True)
+        video_path = os.path.expanduser(f"~/Downloads/eval_videos/episode_{ep+1:02d}_head.mp4")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer = cv2.VideoWriter(video_path, fourcc, 30.0, (640, 480))
+        print(f"  Recording to {video_path}")
 
         step_times = []
 
@@ -319,6 +325,12 @@ def main():
                 action_chunk, info = policy.get_action(obs)
                 chunk_step = 0
             execute_action_step(action_chunk, chunk_step, arm_ctrl, dex3_reader)
+            # record head camera frame
+            _imgs = camera_reader.get_images()
+            if _imgs is not None and "head" in _imgs:
+                video_writer.write(_imgs["head"])
+            else:
+                video_writer.write(np.zeros((480, 640, 3), dtype=np.uint8))
             chunk_step += 1
 
             # sleep to maintain 30Hz then measure full loop time
@@ -330,6 +342,8 @@ def main():
                 avg_hz = 1.0 / np.mean(step_times[-50:]) if step_times else 0
                 print(f"  Step {step:3d}/{max_steps} | avg freq: {avg_hz:.1f} Hz")
 
+        video_writer.release()
+        print(f"  Video saved: {video_path}")
         success_input = input("  Episode complete. Success? (y/n): ").strip().lower()
         success = success_input == 'y'
         results.append(success)
