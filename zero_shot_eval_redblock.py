@@ -20,7 +20,9 @@ from image_server.shared_memory_utils import MultiImageReader
 # which is the correct domain for Isaac Sim. All subscribers must be created
 # after G1_29_ArmController is initialised so they share domain 1.
 from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelPublisher
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_ as hg_LowState, HandState_ as hg_HandState
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_ as hg_LowState, HandState_ as hg_HandState, HandCmd_ as hg_HandCmd
+from unitree_sdk2py.idl.default import unitree_hg_msg_dds__HandCmd_
+from unitree_sdk2py.core.channel import ChannelSubscriber, ChannelPublisher
 from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
 
 
@@ -183,16 +185,47 @@ def prepare_observation(arm_ctrl, dex3_reader, camera_reader):
     return {'video': video, 'state': state, 'language': language}
 
 
+# Global hand publishers — initialized once
+_left_hand_pub  = None
+_right_hand_pub = None
+
+def init_hand_publishers():
+    global _left_hand_pub, _right_hand_pub
+    _left_hand_pub  = ChannelPublisher("rt/dex3/left/cmd",  hg_HandCmd)
+    _right_hand_pub = ChannelPublisher("rt/dex3/right/cmd", hg_HandCmd)
+    _left_hand_pub.Init()
+    _right_hand_pub.Init()
+    print("[HandPublisher] Left and right hand publishers initialized")
+
+def send_hand_cmd(publisher, q_target):
+    """Send position command to one hand via DDS."""
+    msg = unitree_hg_msg_dds__HandCmd_()
+    for i in range(min(7, len(q_target))):
+        msg.motor_cmd[i].q   = float(q_target[i])
+        msg.motor_cmd[i].kp  = 1.0
+        msg.motor_cmd[i].kd  = 0.1
+        msg.motor_cmd[i].dq  = 0.0
+        msg.motor_cmd[i].tau = 0.0
+    publisher.Write(msg)
+
 def execute_action_step(action, step_idx, arm_ctrl, dex3_reader):
     """
     Execute a single timestep from the action chunk.
     action keys: left_arm(1,16,7), right_arm(1,16,7), left_ee(1,16,7), right_ee(1,16,7)
     """
     i = min(step_idx, action['left_arm'].shape[1] - 1)
+    # arm commands
     left_arm_action  = action['left_arm'][0, i, :].astype(np.float64)
     right_arm_action = action['right_arm'][0, i, :].astype(np.float64)
     combined_arm     = np.concatenate([left_arm_action, right_arm_action])
     arm_ctrl.ctrl_dual_arm(combined_arm, np.zeros(14))
+    # hand commands
+    if _left_hand_pub is not None and 'left_ee' in action:
+        left_ee_action = action['left_ee'][0, i, :]
+        send_hand_cmd(_left_hand_pub, left_ee_action)
+    if _right_hand_pub is not None and 'right_ee' in action:
+        right_ee_action = action['right_ee'][0, i, :]
+        send_hand_cmd(_right_hand_pub, right_ee_action)
 
 def wait_for_ready(arm_ctrl, dex3_reader, camera_reader, timeout=30):
     """Wait until all data sources are providing data."""
@@ -239,6 +272,8 @@ def main():
     arm_ctrl = G1_29_ArmController(simulation_mode=True)
 
     # initialise Dex3 state reader AFTER arm controller
+    print("Initialising hand publishers...")
+    init_hand_publishers()
     print("Initialising Dex3 state reader...")
     dex3_reader = Dex3StateReader()
 
@@ -284,18 +319,10 @@ def main():
             execute_action_step(action_chunk, chunk_step, arm_ctrl, dex3_reader)
             chunk_step += 1
 
-            t_end   = time.time()
-            elapsed = t_end - t_start
-            step_times.append(elapsed)
+            # sleep to maintain 30Hz then measure full loop time
+            time.sleep(max(0, CONTROL_DT - (time.time() - t_start)))
+            step_times.append(time.time() - t_start)
 
-            # sleep to maintain control frequency
-            sleep_time = CONTROL_DT - elapsed
-            if True:  # always sleep to maintain 30Hz
-                time.sleep(max(0, CONTROL_DT - elapsed))
-            t_end = time.time()
-            elapsed = t_end - t_start
-            t_end = time.time()
-            elapsed = t_end - t_start
 
             if step % 50 == 0:
                 avg_hz = 1.0 / np.mean(step_times[-50:]) if step_times else 0
