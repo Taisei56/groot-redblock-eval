@@ -300,6 +300,8 @@ def main():
     for ep in range(num_episodes):
         print(f"Episode {ep + 1}/{num_episodes}")
         print("  Resetting scene...")
+        arm_ctrl.ctrl_dual_arm_go_home()
+        time.sleep(2.0)
         resetter.reset_all()
         time.sleep(1.0)
         print("  Scene reset. Starting episode...")
